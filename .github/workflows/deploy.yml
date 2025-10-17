@@ -1,10 +1,10 @@
 name: CI/CD Deploy Java App to Tomcat10 on EC2
 
-# Trigger deployment on push to main branch and allow manual dispatch
+# Trigger deployment on push to master branch and allow manual dispatch
 on:
   push:
     branches:
-      -master
+      - master
   workflow_dispatch: {}
 
 jobs:
@@ -27,9 +27,10 @@ jobs:
       - name: Build WAR file
         run: mvn clean package -DskipTests
 
-      # 4️⃣ Verify WAR file exists
-      - name: Verify WAR file
+      # 4️⃣ Verify WAR file exists and copy it to a known location
+      - name: Verify WAR file exists
         run: |
+          set -e
           echo "=== Listing target directory ==="
           ls -la target/ || true
 
@@ -57,6 +58,7 @@ jobs:
       # 5️⃣ Create SSH key file (preserve newlines and set safe permissions)
       - name: Create SSH key file
         run: |
+          set -e
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -71,6 +73,7 @@ jobs:
       # 6️⃣ Clean up EC2 and upload WAR file
       - name: Upload WAR to EC2
         run: |
+          set -e
           echo "=== Cleaning up EC2 ==="
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} \
             "sudo rm -f /tmp/ROOT.war; sudo touch /tmp/ROOT.war; sudo chmod 666 /tmp/ROOT.war"
@@ -87,6 +90,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             echo "=== Checking /tmp directory ==="
             ls -la /tmp/ || true
 
@@ -116,6 +120,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             echo "=== Starting Deployment ==="
 
             echo "1. Stopping Tomcat..."
@@ -137,9 +142,9 @@ jobs:
             file /tmp/ROOT.war
 
             echo "4. Copying WAR to webapps directory..."
-            sudo cp /tmp/ROOT.war /var/lib/tomcat10/webapps/
+            sudo cp /tmp/ROOT.war /var/lib/tomcat10/webapps/ROOT.war
 
-            echo "5. Setting permissions..."
+            echo "5. Setting permissions on WAR..."
             sudo chown tomcat:tomcat /var/lib/tomcat10/webapps/ROOT.war || true
             sudo chmod 644 /var/lib/tomcat10/webapps/ROOT.war || true
 
@@ -147,14 +152,27 @@ jobs:
             ls -lh /var/lib/tomcat10/webapps/ || true
             file /var/lib/tomcat10/webapps/ROOT.war || true
 
-            echo "7. Creating ROOT directory..."
+            echo "7. Creating ROOT directory (for exploded deployment) if needed..."
             sudo mkdir -p /var/lib/tomcat10/webapps/ROOT
-            sudo chown tomcat:tomcat /var/lib/tomcat10/webapps/ROOT || true
-            sudo chmod 755 /var/lib/tomcat10/webapps/ROOT || true
+            sudo chown -R tomcat:tomcat /var/lib/tomcat10/webapps/ROOT || true
+            sudo chmod -R 755 /var/lib/tomcat10/webapps/ROOT || true
 
-            echo "8. Extracting WAR file..."
-            sudo -u tomcat unzip -o /var/lib/tomcat10/webapps/ROOT.war -d /var/lib/tomcat10/webapps/ROOT/
+            echo "8. Extracting WAR file (as tomcat user)..."
+            # unzip may require sudo; run as tomcat so ownership is correct
+            sudo -u tomcat unzip -o /var/lib/tomcat10/webapps/ROOT.war -d /var/lib/tomcat10/webapps/ROOT/ || true
 
-            echo "9. Setting permissions](#)
-
-    
+            echo "9. Setting ownership and permissions for exploded files..."
+            sudo chown -R tomcat:tomcat /var/lib/tomcat10/webapps/ROOT
+            sudo find /var/lib/tomcat10/webapps/ROOT -type d -exec chmod 755 {} \;
+            sudo find /var/lib/tomcat10/webapps/ROOT -type f -exec chmod 644 {} \;
+
+            echo "10. Cleaning up temporary WAR if desired..."
+            # Optionally remove /tmp/ROOT.war to free space
+            # sudo rm -f /tmp/ROOT.war
+
+            echo "11. Starting Tomcat..."
+            sudo systemctl start tomcat10
+            echo "Tomcat status:"
+            sudo systemctl status tomcat10 --no-pager || true
+
+            echo "Deployment finished."
